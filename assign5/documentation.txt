@@ -1,0 +1,75 @@
+############################
+
+mysocket.h
+
+############################
+
+This header file defines a custom TCP socket implementation with functions for creating and using sockets.
+
+The SOCK_MyTCP constant defines the value for the custom TCP socket type.
+
+The Message struct is used to hold message data, with a pointer to the data and the length of the message.
+
+The MyTCPsocket struct holds information about the socket, including the socket file descriptor, tables to hold messages to send and received messages, and mutexes for accessing these tables.
+
+The following function prototypes are included:
+
+    my_socket: creates a new socket and returns a pointer to the MyTCPsocket struct representing the socket
+    my_bind: binds a socket to a specific address and port
+    my_listen: puts a socket in listening mode
+    my_accept: accepts a connection on a socket and returns a new socket for the connection
+    my_connect: connects a socket to a specific address and port
+    my_send: sends data on a socket
+    my_recv: receives data on a socket
+    my_close: closes a socket
+
+All of these functions take a pointer to a MyTCPsocket struct as their first argument, so that they can operate on the socket.
+
+The pthread library is used for thread synchronization to ensure that messages are sent and received in a thread-safe manner.
+
+##############################
+
+mysocket.c
+
+##############################
+
+Receive_Thread(void *arg): This function is used to receive data from a TCP socket. It first sleeps for 15 seconds to simulate a delay, 
+then it receives data from the socket in a loop until there is no more data to receive. It then updates the Received_Message table with the received data.
+
+Send_Thread(void *arg): This function is used to send data to a TCP socket. It first sleeps for 5 seconds to simulate a delay, 
+then it waits for a message to send from the Send_Message table. Once a message is available, it sends the message to the socket and removes it from the Send_Message table.
+
+my_socket(int domain, int type, int protocol): This function creates a new MyTCP socket by allocating memory for a 
+MyTCPsocket structure and creating a socket using the socket() function and also creates two threads - one for sending and one for receiving
+
+The my_send function is used to send data to a socket. It allocates memory for a new message, copies the message data to the new message, adds the message to the Send_Message table, increments the message count, and notifies the send thread that a new message is ready to send. 
+
+The my_recv function is used to receive data from a socket. It locks the receive message mutex, gets the first message in the Received_Message table, shifts all messages in the table one index to the left, decrements the message count, unlocks the receive message mutex, and returns the received message.
+
+The my_accept() function creates a new TCP socket, sets up its Send_Message and Received_Message tables, initializes them, and then waits for a connection request from a client using the accept() system call. If a connection request is received, it accepts the connection and returns a pointer to the newly created socket.
+
+The my_connect() function attempts to establish a connection to a server at a specified address using the connect() system call. If the connection is successful, 
+it returns 0. Otherwise, it returns a negative integer to indicate an error.
+
+The my_bind() function binds the socket identified by mysocket to the address specified by addr with a length of addrlen. The bind() function returns 0 on success and -1 on failure. 
+If bind() fails, my_bind() prints an error message using perror() and returns -1. Otherwise, it returns 0.
+
+The my_listen() function listens for incoming connections on the socket identified by mysocket, with a maximum backlog of backlog pending connection requests. 
+The listen() function returns 0 on success and -1 on failure. If listen() fails, my_listen() prints an error message using perror() and returns -1. Otherwise, it returns 0.
+
+The my_close function stops the receive and send threads, closes the socket file descriptor, frees the memory used by message tables, frees the memory used by the MyTCPsocket struct, and returns the status of closing the socket file descriptor. 
+It takes a MyTCPsocket pointer as input.
+
+#############################
+
+Flow of working
+
+#############################
+
+we send the message to be sent to the my_send() which adds the message to the Send_Message table after appyling lock to the table and increment the count of send_message_count, now the Send_threead constantly watches the if send_message_count != 0, as soon as this condition is satisfied by entering records into the table, it is sent using send() and the message is removed from the table, and whenerver we have to recieve a message, the recieved messag eis stored in the table and then displayed to user in the termial in my_recv() and then it is removed from the table.
+
+
+
+
+
+
