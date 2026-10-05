@@ -1,0 +1,17 @@
+# Build outputs
+*.o
+*.a
+01-tcp-client-server/daytime/time_server
+01-tcp-client-server/daytime/time_client
+01-tcp-client-server/calculator/server
+01-tcp-client-server/calculator/client
+02-remote-shell/sh_server
+02-remote-shell/sh_client
+03-load-balancer/lb
+03-load-balancer/server
+03-load-balancer/client
+05-mytcp/server
+05-mytcp/client
+06-pingnetinfo/pingnetinfo
+
+.DS_Store

@@ -21,6 +21,7 @@ int main(int argc, char * argv[])
 	char buf[100];
 
 	port1 = atoi(argv[1]);
+	srand(time(NULL) ^ port1);	// seed once, so each load report is a new random value
 
 	if ((sockfd1 = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
 		perror("Cannot create socket\n");
@@ -56,7 +57,6 @@ int main(int argc, char * argv[])
 
 			if(strcmp(buf, "Send Load")==0)
 			{
-				srand(port1);
 				x1 = (rand() % 100)+1;
 				sprintf(load1, "%d", x1);
 				

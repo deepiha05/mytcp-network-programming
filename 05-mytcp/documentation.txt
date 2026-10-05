@@ -1,0 +1,164 @@
+MyTCP - message-oriented TCP
+============================
+
+A MyTCP socket guarantees that the data passed to one my_send() call is
+returned by exactly one my_recv() call, reliably and in FIFO order. It is a
+layer between the application and an ordinary TCP socket.
+
+
+Message format on the wire
+--------------------------
+
+    +----------------------------+---------------------------+
+    | length (4 bytes, network   | message bytes             |
+    | byte order, uint32)        | (length bytes, <= 5000)   |
+    +----------------------------+---------------------------+
+
+TCP may split one message across several recv() calls or merge several
+messages into one. Thread R always reads exactly 4 bytes for the length and
+then exactly that many bytes, so the original boundaries are recovered.
+Thread S writes a message with send() calls of at most 1000 bytes each.
+
+
+Data structures (mysocket.c)
+----------------------------
+
+message
+    data[5000]   the message bytes
+    len          number of bytes used in data
+
+mssg_table          - circular FIFO used for both tables
+    entries[10]  the stored messages (at most MYTCP_TABLE_SIZE = 10)
+    head         index of the oldest message
+    count        number of messages currently stored
+
+send_table          - the Send_Message table: messages given to my_send()
+                      that S has not finished sending yet
+recv_table          - the Received_Message table: complete messages read by R
+                      that my_recv() has not returned yet
+
+Connection state (all protected by one mutex, `lock`):
+    sock_fd        socket created by my_socket()
+    conn_fd        connected socket that R and S read and write
+                   (client: same as sock_fd; server: socket from my_accept;
+                   -1 when there is no connection)
+    conn_gen       incremented whenever conn_fd changes, so a thread that was
+                   blocked in recv()/send() can tell its connection was closed
+    peer_closed    R reached end of stream or an error on conn_fd
+    send_failed    S could not write to conn_fd
+    r_busy, s_busy R / S are currently inside recv() / send() on conn_fd
+    closing        my_close() is waiting for Send_Message to drain
+    shutting_down  my_close() is stopping R and S
+
+state_changed       - one condition variable, broadcast whenever any of the
+                      above or either table changes. Every waiting thread
+                      re-checks its own condition when woken.
+
+
+Threads
+-------
+
+R (recv_thread)
+    Waits until there is a connection. Without holding the lock, reads the
+    4-byte length and then the message body from the TCP socket. Then, with
+    the lock held, waits while Received_Message is full and appends the
+    message. On end of stream or error it sets peer_closed.
+
+S (send_thread)
+    Waits until there is a connection and Send_Message is not empty. Copies
+    the oldest message, and without holding the lock writes the length and
+    the body using send() calls of at most 1000 bytes. Then, with the lock
+    held, removes the message from Send_Message. On error it sets
+    send_failed and discards the table.
+
+Neither thread holds the lock while blocked in recv() or send(), so
+my_send() and my_recv() never wait for network I/O.
+
+
+Functions (mysocket.c)
+----------------------
+
+my_socket(domain, type, protocol)
+    Accepts only type SOCK_MyTCP. Creates the TCP socket, allocates both
+    tables and starts threads R and S. Only one MyTCP socket may exist at a
+    time.
+
+my_bind, my_listen
+    Call bind() and listen() on the TCP socket.
+
+my_accept(sockfd, addr, addrlen)
+    Calls accept(). The new socket becomes conn_fd, both tables are cleared
+    and R and S are woken to work on it. Fails if a connection is already
+    open (the server is iterative).
+
+my_connect(sockfd, addr, addrlen)
+    Calls connect(). On success the socket becomes conn_fd and R and S are
+    woken.
+
+my_send(sockfd, buf, len, flags)
+    Rejects len > 5000 with EMSGSIZE; len 0 does nothing and returns 0, as
+    with send(). Otherwise see "When my_send is called" below.
+
+my_recv(sockfd, buf, len, flags)
+    See "When my_recv is called" below.
+
+my_close(sockfd)
+    If a connection is open, waits until S has sent everything in
+    Send_Message (incoming messages are dropped meanwhile), then detaches R
+    and S from it: shutdown() wakes them if they are blocked, and my_close
+    waits until neither is using the socket before closing it.
+    - On a socket returned by my_accept(): only that connection is closed;
+      the listening socket stays open so the server can accept the next
+      client.
+    - On the socket returned by my_socket(): also sets shutting_down, joins
+      R and S, frees both tables and closes the socket.
+    Unread messages in Received_Message are discarded.
+
+Helper functions: table_push, table_front, table_pop, table_clear operate on
+an mssg_table; recv_full and send_full read or write an exact number of bytes
+(send_full in chunks of at most 1000 bytes); set_connection and
+drop_connection attach R and S to a socket and detach them from it.
+
+
+When my_send is called
+----------------------
+
+1. The application calls my_send(sockfd, buf, len, 0).
+2. my_send locks `lock`. If sockfd is not the open connection it fails with
+   ENOTCONN; if S has failed earlier it fails with EPIPE.
+3. While Send_Message has 10 entries, my_send waits on state_changed.
+4. The message is copied into the next free entry of Send_Message (count is
+   incremented), state_changed is broadcast, the lock is released and
+   my_send returns len. No network I/O has happened yet.
+5. Thread S wakes up, copies the oldest entry of Send_Message, releases the
+   lock and sends the 4-byte length followed by the message in send() calls
+   of at most 1000 bytes.
+6. S takes the lock again, removes the entry from Send_Message and
+   broadcasts state_changed, which wakes any my_send waiting for a free
+   entry (and my_close, if it is waiting for the table to drain).
+
+
+When my_recv is called
+----------------------
+
+1. Independently of my_recv, thread R is blocked in recv() on the TCP
+   socket. When data arrives it reads the 4-byte length and then exactly
+   that many bytes, however many recv() calls that takes.
+2. R takes the lock, waits while Received_Message has 10 entries, appends the
+   complete message and broadcasts state_changed.
+3. The application calls my_recv(sockfd, buf, len, 0). my_recv locks `lock`.
+4. While Received_Message is empty, my_recv waits on state_changed. If the
+   table is empty and the peer has closed the connection, it returns 0.
+5. my_recv copies min(len, message length) bytes of the oldest message into
+   buf (any extra bytes are discarded), removes the entry from
+   Received_Message, broadcasts state_changed (waking R if it was waiting
+   for space), releases the lock and returns the number of bytes copied.
+
+
+Building and testing
+--------------------
+
+    make         builds libmsocket.a and the example echo server and client
+    make test    runs the echo server and the test client twice
+
+Applications include mysocket.h and link with:  -L. -lmsocket -pthread
